@@ -222,6 +222,90 @@ Elastic SIP outbound trunk. LiveKit creates the room, dispatches `mitra`, and or
 the PSTN call through Twilio. The existing pipeline continues to use Deepgram, Gemini,
 and Murf Falcon.
 
+---
+
+## Telephony
+
+Give your agent a phone number. The same Murf Falcon pipeline that powers the browser agent can answer incoming calls or place outgoing ones.
+
+```mermaid
+flowchart LR
+    A[📞 Caller] -->|PSTN| B[SIP provider]
+    B -->|SIP| C[LiveKit]
+    C -->|audio| D[🤖 Your agent]
+
+    style A fill:#444441,stroke:#888780,color:#fff
+    style B fill:#185FA5,stroke:#85B7EB,color:#fff
+    style C fill:#D85A30,stroke:#F0997B,color:#fff
+    style D fill:#0F6E56,stroke:#5DCAA5,color:#fff
+```
+
+Two self-contained starters live in [`backend/src/telephony/`](./backend/src/telephony/) — copy either folder and build on it.
+
+### [`inbound/`](./backend/src/telephony/inbound/) — answer incoming calls
+
+Someone dials your number and the agent picks up. It reads the caller's number from the SIP participant, greets them, and can transfer to a colleague or hang up when the conversation ends.
+
+```bash
+uv run python src/telephony/inbound/agent.py dev
+```
+
+### [`outbound/`](./backend/src/telephony/outbound/) — place outgoing calls
+
+You trigger a call and the agent dials out, starting the conversation as soon as someone picks up. It recognises voicemail and hangs up instead of talking to a machine.
+
+```bash
+uv run python src/telephony/outbound/agent.py dev              # worker
+uv run python src/telephony/outbound/dial.py --to +15551234567  # place a call
+```
+
+### Setup
+
+Run all commands from the `backend/` directory. Three steps:
+
+1. **Get a phone number** from a SIP provider ([Twilio](https://www.twilio.com/docs/sip-trunking) or any other) and point it at LiveKit
+2. **Create a LiveKit SIP trunk** from the JSON templates included in each folder — `lk sip inbound create …`
+3. **Create a dispatch rule** so LiveKit knows which agent answers (inbound only)
+
+Full walkthrough, environment variables, and troubleshooting: **[backend/src/telephony/README.md](./backend/src/telephony/README.md)**
+
+> **Note:** Phone numbers are billed by your SIP provider, and some countries require identity or business verification before one is issued. Factor that into your timeline.
+
+---
+
+## Configuration
+
+### Murf voice
+
+Edit the `tts=murf.TTS(...)` call in `backend/src/agent.py`. Set the `voice` argument to any Murf voice ID. Examples:
+
+- `Anisha` — Indian English (female, default in this starter)
+- `Pooja` — Indian English (female)
+- `Samar` — Indian English (male)
+- `Amara` — US English (female)
+- `Gordon` — US English (male)
+- `Hazel` — UK English (female)
+- `Bertie` — UK English (male)
+
+Browse all voices: [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library).
+
+### STT provider
+
+STT is configured in `backend/src/agent.py` in the `AgentSession(stt=...)` call. The default is Deepgram (`deepgram.STT(model="nova-3")`). You can swap to another LiveKit-compatible STT plugin if needed.
+
+### LLM (Gemini vs OpenAI)
+
+- **Gemini (default):** Set `GOOGLE_API_KEY` and use `llm=google.LLM(model="gemini-3.5-flash-lite")` in `agent.py`.
+- **OpenAI:** Set `OPENAI_API_KEY`, add the OpenAI plugin, and use the corresponding `llm=openai.LLM(...)` in `agent.py`.
+
+### Audio format
+
+Murf Falcon and LiveKit handle audio format internally. For advanced options, see [Murf API docs](https://murf.ai/api/docs) and [LiveKit docs](https://docs.livekit.io).
+
+---
+
+### Local-commerce order confirmation flow
+
 ```mermaid
 flowchart LR
     UI[Local Commerce order] --> API[Backend]
@@ -321,7 +405,10 @@ murf-livekit-starter/
 │   │   ├── catalogue.py        # Catalogue search and order calculations
 │   │   ├── catalogue_api.py    # Independently managed local HTTP API
 │   │   ├── knowledge.py        # Local knowledge retriever
-│   │   └── memory.py           # Consent-gated SQLite caller memory
+│   │   ├── memory.py           # Consent-gated SQLite caller memory
+│   │   └── telephony/          # Optional phone-call agent starters
+│   │       ├── inbound/        # Answers incoming calls
+│   │       └── outbound/       # Places outgoing calls
 │   ├── tests/test_agent.py     # Unit and LLM-judged evaluations
 │   ├── .env.example
 │   └── pyproject.toml
@@ -341,6 +428,43 @@ murf-livekit-starter/
 Deploy the backend as a long-running Python worker and the frontend as a Next.js application. Both services must use the same LiveKit project credentials. In the deployed frontend, set `AGENT_NAME=mitra` so sessions are dispatched to the agent registered in `backend/src/agent.py`.
 
 For production use, replace the sample catalogue, inventory, order, and khata implementations with authenticated persistent services. Store the SQLite database on a persistent volume or migrate caller memory to a managed database.
+
+- [Backend Documentation](./backend/README.md) — agent pipeline, voice/LLM/STT configuration, testing, deployment
+- [Telephony Documentation](./backend/src/telephony/README.md) — SIP trunks, dispatch rules, inbound and outbound calls
+- [Frontend Documentation](./frontend/README.md) — UI customization, visualizers, theming, component architecture
+
+---
+
+## Links
+
+**Murf**
+
+- [Murf Falcon 2](https://murf.ai/api/docs/text-to-speech-models/falcon-2) — the streaming TTS model this starter uses
+- [Murf Falcon](https://murf.ai/falcon) — product overview and latency numbers
+- [Murf API Docs](https://murf.ai/api/docs)
+- [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library) — 150+ voices across 35+ languages
+- [Murf Falcon Benchmarks](https://murf.ai/falcon/benchmarks)
+- [Murf Discord](https://discord.gg/FbKAy96Sz7)
+- [Murf Startup Incubator](https://murf.ai/api) — 50M free characters for startups
+
+**Telephony**
+
+- [Telephony Setup Guide](./backend/src/telephony/README.md) — inbound and outbound calls in this repo
+- [LiveKit SIP Docs](https://docs.livekit.io/sip/) — trunks, dispatch rules, call lifecycle
+- [Accepting Inbound Calls](https://docs.livekit.io/sip/accepting-calls/)
+- [Making Outbound Calls](https://docs.livekit.io/sip/making-calls/)
+- [SIP Dispatch Rules](https://docs.livekit.io/sip/dispatch-rule/)
+- [Agent Dispatch](https://docs.livekit.io/agents/server/agent-dispatch/) — how agents get routed to calls
+- [SIP Troubleshooting](https://docs.livekit.io/reference/telephony/troubleshooting/)
+- [Twilio Elastic SIP Trunking](https://www.twilio.com/docs/sip-trunking) — the provider used in the examples
+
+**Other**
+
+- [LiveKit Docs](https://docs.livekit.io)
+- [Deepgram Docs](https://developers.deepgram.com)
+- [TTS Latency Benchmarker](https://github.com/sahilsgupta/tts-latency-benchmarker) — run your own p50/p95 tests across providers
+
+---
 
 ## License
 
