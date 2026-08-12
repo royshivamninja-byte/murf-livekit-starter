@@ -30,6 +30,12 @@ export interface OutboundCallResult {
   state: CallState;
 }
 
+export interface ResolutionCallRequest {
+  customerName: string;
+  referenceId: string;
+  phoneNumber: string;
+}
+
 type CallRecord = OutboundCallResult & {
   roomName: string;
   participantIdentity: string;
@@ -209,6 +215,89 @@ export async function placeOutboundCall(request: OutboundCallRequest): Promise<O
         event: 'sip_call_failed',
         callSid,
         roomName,
+        state,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    );
+    return { callSid, state };
+  }
+}
+
+export async function placeResolutionCall(
+  request: ResolutionCallRequest
+): Promise<OutboundCallResult> {
+  if (!request.customerName.trim()) throw new Error('Customer name is required');
+  if (!/^ESC-\d{4}-\d{3,}$/.test(request.referenceId.trim().toUpperCase())) {
+    throw new Error('A valid escalation reference is required');
+  }
+  const host = liveKitHost();
+  const apiKey = required('LIVEKIT_API_KEY');
+  const apiSecret = required('LIVEKIT_API_SECRET');
+  const trunkId = required('LIVEKIT_SIP_OUTBOUND_TRUNK_ID');
+  const destination = e164(request.phoneNumber, 'phoneNumber');
+  const callerId = e164(required('TWILIO_PHONE_NUMBER'), 'TWILIO_PHONE_NUMBER');
+  const callSid = crypto.randomUUID();
+  const roomName = `escalation-resolution-${callSid}`;
+  const participantIdentity = `customer-${callSid}`;
+  const referenceId = request.referenceId.trim().toUpperCase();
+  const record: CallRecord = {
+    callSid,
+    roomName,
+    participantIdentity,
+    orderId: referenceId,
+    attempt: 1,
+    state: 'REQUESTED',
+    orderConfirmed: false,
+    retryAllowedAt: null,
+    retryRule: 'No automatic retry for resolution notifications',
+    connectedAt: null,
+    updatedAt: new Date().toISOString(),
+  };
+  calls.set(callSid, record);
+
+  const agentName = process.env.AGENT_NAME?.trim() || 'mitra';
+  const dispatch = new AgentDispatchClient(host, apiKey, apiSecret);
+  await dispatch.createDispatch(roomName, agentName);
+  record.state = 'RINGING';
+  record.updatedAt = new Date().toISOString();
+  calls.set(callSid, record);
+
+  const sip = new SipClient(host, apiKey, apiSecret);
+  try {
+    const participant = await sip.createSipParticipant(trunkId, destination, roomName, {
+      fromNumber: callerId,
+      participantIdentity,
+      participantName: request.customerName,
+      participantMetadata: JSON.stringify({
+        type: 'escalation_resolution',
+        customerName: request.customerName,
+        referenceId,
+      }),
+      playDialtone: true,
+      ringingTimeout: 45,
+      maxCallDuration: 120,
+    });
+    record.state = 'CONNECTED';
+    record.connectedAt = new Date().toISOString();
+    record.updatedAt = record.connectedAt;
+    calls.set(callSid, record);
+    console.info(
+      JSON.stringify({
+        event: 'resolution_call_connected',
+        callSid,
+        referenceId,
+        participantId: participant.participantId,
+      })
+    );
+    return { callSid, state: record.state };
+  } catch (error) {
+    const state = failedState(error);
+    applyFailure(record, state);
+    console.error(
+      JSON.stringify({
+        event: 'resolution_call_failed',
+        callSid,
+        referenceId,
         state,
         reason: error instanceof Error ? error.message : String(error),
       })
