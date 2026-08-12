@@ -31,6 +31,7 @@ from catalogue import (
     fetch_catalogue,
     search_products,
 )
+from escalation import EscalationStore
 from knowledge import KnowledgeBase
 from memory import CallerMemory, CallerMemoryStore
 
@@ -72,7 +73,7 @@ title naturally, and say when the knowledge base has no relevant answer. Never t
 a retrieved document as proof that the caller is eligible or that an outcome is
 approved. Suggest checking the cited official source for current details.
 
-LANGUAGE
+LANGUAGE & SCRIPT
 LANGUAGE ROUTING IS A HIGH-PRIORITY RULE. Determine the response language only from
 the user's current message, never from earlier turns, the greeting, caller memory, or
 your Indian identity.
@@ -148,12 +149,28 @@ real handoff mechanism confirms that. Never ask for an OTP, PIN, password, full 
 account number, or full card details. Do not provide legal, medical, or financial
 advice. Acknowledge the request briefly, state the limit, and offer a safe next step.
 
-For seller decisions, disputes, refunds, payment issues, safety concerns, repeated
-misunderstanding, or anything outside your authority, use this escalation script in
-the user's language: "I can't verify or decide that. I can help you contact the seller
-or a human support person. Would you like me to note your order ID and a brief message?"
-Only request the order ID and a short non-sensitive message. For immediate danger,
-tell the user to contact local emergency services or a trusted person now.
+HUMAN HELP
+Try existing tools for normal order-location, arrival-time, and safe change requests;
+do not escalate those. Human help is required for payment/refund disputes (charged for
+a failed or undelivered order, refund requests, disputed amounts, or unsafe payment
+problems) and order disputes (wrong, missing, damaged, or falsely marked-delivered
+items). Default payment/refund urgency to HIGH and order disputes to MEDIUM. Use LOW,
+HIGH, or EMERGENCY only when the facts justify it; normal complaints are not emergencies.
+
+Before creating a request, explain that you would share the customer's name, the issue,
+what you checked, language, and preferred follow-up method. Ask if that is okay and wait
+for an explicit answer. Do not call create_escalation in the same turn as this question.
+If they decline, say: "No problem. I won't create a support request or share those
+details." Never call the tool after a refusal. After an explicit yes, call
+create_escalation with consent_given=true. Include only a short useful human summary,
+never a transcript or secrets. Never ask for or include passwords, OTPs, PINs, card or
+bank numbers, CVVs, API keys, or tokens. The tool sanitizes again before storage.
+After success, give the returned reference, say the team will review it and follow up
+using the preferred method, and say you cannot guarantee an immediate response. If the
+tool reports a duplicate, explain that the latest information was added to the existing
+request. Use get_escalation_status when a customer supplies a support reference; report
+only the stored status and never claim resolution unless it is RESOLVED. For immediate
+danger, tell the user to contact local emergency services or a trusted person now.
 
 ORDER RULES
 Use search_catalogue for catalogue, product, price, seller, or stock questions. Before
@@ -199,6 +216,20 @@ RULES
 - If the customer declines or sounds uncertain, acknowledge it without persuasion.
 - Never ask for payment details, an OTP, PIN, password, or bank information.
 - Use one or two short spoken sentences at a time with no markdown or bullet points.
+"""
+
+RESOLUTION_CALL_PROMPT = """IDENTITY
+You are Mitra, an AI calling assistant for a local-commerce marketplace. This outbound
+call only notifies a customer that their human-help request has been marked resolved.
+
+RULES
+- Clearly identify yourself as an AI assistant and state the supplied support reference.
+- Say the request is marked resolved. Do not invent details about how it was resolved.
+- If the customer says the issue is not resolved, apologize and advise them to contact
+  support again with the reference. Do not change records during this call.
+- Explain that the customer can say "stop" to prevent future notification calls.
+- Never ask for payment details, an OTP, PIN, password, or bank information.
+- Keep the call brief, use no markdown, thank the customer, and end politely.
 """
 
 HINDI_SCRIPT_RANGE = range(0x0900, 0x0980)
@@ -316,6 +347,7 @@ class Assistant(Agent):
         self,
         caller_id: str = "test-caller",
         memory_store: CallerMemoryStore | None = None,
+        escalation_store: EscalationStore | None = None,
         knowledge_base: KnowledgeBase | None = None,
         catalogue_provider: Callable[[], Catalogue] | None = None,
         instructions: str = SYSTEM_PROMPT,
@@ -326,6 +358,9 @@ class Assistant(Agent):
         database_path = os.getenv("CALLER_MEMORY_DB")
         self.memory_store = memory_store or (
             CallerMemoryStore(database_path) if database_path else CallerMemoryStore()
+        )
+        self.escalation_store = escalation_store or (
+            EscalationStore(database_path) if database_path else EscalationStore()
         )
         self.knowledge_base = knowledge_base or KnowledgeBase()
         self.catalogue_provider = catalogue_provider
@@ -519,6 +554,76 @@ class Assistant(Agent):
         if forgotten:
             return "Your saved caller record was deleted. I no longer remember you."
         return "No saved caller record existed, so there was nothing to delete."
+
+    @function_tool
+    async def create_escalation(
+        self,
+        context: RunContext,
+        customer_name: str,
+        issue_type: str,
+        summary: str,
+        checked_information: str,
+        urgency: str,
+        language: str,
+        preferred_followup: str,
+        consent_given: bool,
+    ) -> str:
+        """Create human help only after the customer explicitly permits sharing.
+
+        Args:
+            customer_name: Name the customer permitted Mitra to share.
+            issue_type: PAYMENT_REFUND or ORDER_DISPUTE.
+            summary: Brief issue description without a conversation transcript.
+            checked_information: Short factual list of what Mitra already checked.
+            urgency: LOW, MEDIUM, HIGH, or EMERGENCY.
+            language: Language for the human follow-up.
+            preferred_followup: Customer's requested follow-up method.
+            consent_given: True only after an explicit yes to the sharing explanation.
+        """
+        del context
+        if not consent_given:
+            logger.info("Escalation permission denied")
+            return "No support request was created because permission was not granted."
+        logger.info("Escalation permission granted")
+        try:
+            escalation, created = self.escalation_store.create_or_update(
+                customer_id=self.caller_id,
+                customer_name=customer_name,
+                issue_type=issue_type,
+                summary=summary,
+                checked_information=checked_information,
+                urgency=urgency,
+                language=language,
+                preferred_followup=preferred_followup,
+                consent_given=consent_given,
+            )
+        except ValueError as error:
+            return f"Support request not created: {error}."
+        if created:
+            logger.info("Escalation created: %s", escalation.reference_id)
+            return (
+                f"Support request {escalation.reference_id} was created with "
+                f"{escalation.urgency} urgency and OPEN status."
+            )
+        logger.info("Duplicate escalation updated: %s", escalation.reference_id)
+        return (
+            f"An open support request already exists for this issue: "
+            f"{escalation.reference_id}. The latest information was added to it."
+        )
+
+    @function_tool
+    async def get_escalation_status(
+        self, context: RunContext, reference_id: str
+    ) -> str:
+        """Retrieve the factual status of a support request by its ESC reference."""
+        del context
+        escalation = self.escalation_store.get(reference_id)
+        if escalation is None:
+            return "No support request was found with that reference ID."
+        return (
+            f"Support request {escalation.reference_id} is currently "
+            f"{escalation.status}."
+        )
 
     @function_tool
     async def search_knowledge_base(self, context: RunContext, query: str) -> str:
@@ -770,7 +875,10 @@ async def my_agent(ctx: JobContext):
     if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP:
         try:
             metadata = json.loads(participant.metadata or "{}")
-            if metadata.get("type") == "outbound_order_confirmation":
+            if metadata.get("type") in {
+                "outbound_order_confirmation",
+                "escalation_resolution",
+            }:
                 outbound_context = metadata
         except (json.JSONDecodeError, AttributeError):
             logger.warning("Invalid outbound SIP participant metadata")
@@ -787,19 +895,29 @@ async def my_agent(ctx: JobContext):
                 "orderTotal": os.getenv("ORDER_TOTAL_INR", ""),
                 "deliveryTime": os.getenv("ORDER_DELIVERY_TIME", ""),
             }
-    assistant = Assistant(
-        caller_id=participant.identity,
-        outbound_context=outbound_context,
-        instructions=(
+    if outbound_context and outbound_context.get("type") == "escalation_resolution":
+        outbound_instructions = (
+            f"{RESOLUTION_CALL_PROMPT}\n\nCALL CONTEXT\n"
+            f"Customer: {outbound_context.get('customerName')}\n"
+            f"Support reference: {outbound_context.get('referenceId')}\n"
+            "Stored status: RESOLVED"
+        )
+    elif outbound_context:
+        outbound_instructions = (
             f"{OUTBOUND_CALL_PROMPT}\n\nCALL CONTEXT\n"
             f"Customer: {outbound_context.get('customerName')}\n"
             f"Order ID: {outbound_context.get('orderId')}\n"
             f"Items: {', '.join(outbound_context.get('orderItems', []))}\n"
             f"Total: INR {outbound_context.get('orderTotal')}\n"
             f"Delivery: {outbound_context.get('deliveryTime')}"
-            if outbound_context
-            else SYSTEM_PROMPT
-        ),
+        )
+    else:
+        outbound_instructions = SYSTEM_PROMPT
+
+    assistant = Assistant(
+        caller_id=participant.identity,
+        outbound_context=outbound_context,
+        instructions=outbound_instructions,
     )
     caller_memory = assistant.memory_store.lookup(participant.identity)
 
@@ -865,7 +983,16 @@ async def my_agent(ctx: JobContext):
         ),
     )
 
-    if outbound_context:
+    if outbound_context and outbound_context.get("type") == "escalation_resolution":
+        reference_id = outbound_context.get("referenceId", "")
+        greeting = (
+            "Hello, this is Mitra, an AI calling assistant. "
+            f"Your support request {reference_id} has been marked resolved. "
+            "If the issue is still unresolved, please contact support again using this "
+            "reference. You can say stop to prevent future notification calls."
+        )
+        logger.info("Resolution notification started for %s", reference_id)
+    elif outbound_context:
         greeting = (
             "Hi, this is Mitra, an AI calling assistant from FreshMart. "
             "I'm calling to confirm your grocery order scheduled for delivery today. "

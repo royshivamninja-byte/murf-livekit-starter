@@ -10,6 +10,7 @@ import {
   TruckIcon,
 } from 'lucide-react';
 import { CatalogueCards } from '@/components/app/catalogue-cards';
+import { EscalationDashboard } from '@/components/app/escalation-dashboard';
 import { OutboundCallCard } from '@/components/app/outbound-call-card';
 import { Button } from '@/components/ui/button';
 
@@ -132,6 +133,7 @@ export const WelcomeView = ({
       </section>
       <OutboundCallCard />
       <CatalogueCards />
+      <EscalationDashboard />
     </div>
   );
 };

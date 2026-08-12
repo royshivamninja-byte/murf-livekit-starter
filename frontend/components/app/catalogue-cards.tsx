@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Clock3Icon,
   HouseIcon,
@@ -8,6 +8,7 @@ import {
   MapPinIcon,
   MilkIcon,
   PackageIcon,
+  RefreshCwIcon,
   SandwichIcon,
   ShirtIcon,
   ShoppingBasketIcon,
@@ -59,20 +60,28 @@ export function CatalogueCards() {
   const [catalogue, setCatalogue] = useState<CatalogueResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const loadCatalogue = useCallback(async (signal?: AbortSignal) => {
+    setError(null);
+    try {
+      const response = await fetch('/api/catalogue', { cache: 'no-store', signal });
+      const contentType = response.headers.get('content-type') ?? '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('The catalogue service returned an invalid response. Please try again.');
+      }
+      const data = (await response.json()) as CatalogueResponse & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? 'Catalogue unavailable');
+      setCatalogue(data);
+    } catch (reason: unknown) {
+      if (reason instanceof DOMException && reason.name === 'AbortError') return;
+      setError(reason instanceof Error ? reason.message : 'Catalogue unavailable');
+    }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
-    fetch('/api/catalogue', { cache: 'no-store', signal: controller.signal })
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error ?? 'Catalogue unavailable');
-        setCatalogue(data);
-      })
-      .catch((reason: unknown) => {
-        if (reason instanceof DOMException && reason.name === 'AbortError') return;
-        setError(reason instanceof Error ? reason.message : 'Catalogue unavailable');
-      });
+    void loadCatalogue(controller.signal);
     return () => controller.abort();
-  }, []);
+  }, [loadCatalogue]);
 
   return (
     <section className="mx-auto mt-16 w-full max-w-6xl">
@@ -101,6 +110,13 @@ export function CatalogueCards() {
           <p className="mx-auto mt-2 max-w-xl text-sm text-stone-500 dark:text-stone-400">
             {error}
           </p>
+          <button
+            type="button"
+            onClick={() => void loadCatalogue()}
+            className="mx-auto mt-4 flex items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 text-sm font-bold text-white hover:bg-orange-700"
+          >
+            <RefreshCwIcon className="size-4" /> Try again
+          </button>
         </div>
       ) : !catalogue ? (
         <div className="h-64 animate-pulse rounded-3xl bg-orange-100/70 dark:bg-stone-800" />
