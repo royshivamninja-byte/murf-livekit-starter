@@ -1,9 +1,11 @@
 import json
 import logging
 import os
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+from analytics import AnalyticsFilter, CallAnalyticsStore
 from catalogue import DEFAULT_CATALOGUE_PATH, CatalogueUnavailableError, load_catalogue
 from escalation import EscalationStore
 
@@ -13,6 +15,37 @@ logger = logging.getLogger("catalogue-api")
 def _escalation_store() -> EscalationStore:
     database_path = os.getenv("CALLER_MEMORY_DB")
     return EscalationStore(database_path) if database_path else EscalationStore()
+
+
+def _analytics_store() -> CallAnalyticsStore:
+    database_path = os.getenv("CALLER_MEMORY_DB")
+    return CallAnalyticsStore(database_path) if database_path else CallAnalyticsStore()
+
+
+def _analytics_filters(query: str) -> AnalyticsFilter:
+    values = parse_qs(query)
+
+    def first(name: str) -> str:
+        return values.get(name, [""])[0].strip()
+
+    def parsed_date(name: str) -> date | None:
+        value = first(name)
+        return date.fromisoformat(value) if value else None
+
+    language = first("language")
+    channel = first("channel").upper()
+    outcome = first("outcome").upper()
+    if channel and channel not in {"BROWSER", "SIP"}:
+        raise ValueError("Invalid channel")
+    if outcome and outcome not in {"SUCCESS", "FAILED"}:
+        raise ValueError("Invalid outcome")
+    return AnalyticsFilter(
+        date_from=parsed_date("date_from"),
+        date_to=parsed_date("date_to"),
+        language=language,
+        channel=channel,
+        outcome=outcome,
+    )
 
 
 class CatalogueRequestHandler(BaseHTTPRequestHandler):
@@ -25,7 +58,8 @@ class CatalogueRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
         if path == "/health":
             self._send_json(200, {"status": "ok"})
             return
@@ -40,6 +74,31 @@ class CatalogueRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "Escalation not found"})
                 return
             self._send_json(200, record.to_dict())
+            return
+        if path.startswith("/analytics/"):
+            try:
+                filters = _analytics_filters(parsed_url.query)
+                store = _analytics_store()
+                if path == "/analytics/summary":
+                    payload = store.summary(filters)
+                elif path == "/analytics/calls":
+                    payload = {
+                        "calls": store.list_calls(
+                            filters,
+                            int(parse_qs(parsed_url.query).get("limit", ["100"])[0]),
+                        )
+                    }
+                elif path == "/analytics/trends":
+                    payload = {"trends": store.trends(filters)}
+                elif path == "/analytics/failures":
+                    payload = {"failures": store.failures(filters)}
+                else:
+                    self._send_json(404, {"error": "Not found"})
+                    return
+            except (ValueError, OverflowError) as error:
+                self._send_json(400, {"error": str(error)})
+                return
+            self._send_json(200, payload)
             return
         if path != "/catalogue":
             self._send_json(404, {"error": "Not found"})

@@ -7,6 +7,8 @@ from agent import (
     FIRST_TURN_GREETING,
     SYSTEM_PROMPT,
     Assistant,
+    _is_farewell,
+    _namaste_instruction,
     _normalize_catalogue_query,
     _normalize_inventory_name,
     _response_language,
@@ -321,6 +323,26 @@ def test_first_turn_greeting_states_identity_and_job() -> None:
     assert "Namaste" not in FIRST_TURN_GREETING
 
 
+def test_system_prompt_limits_namaste_to_greeting_turns() -> None:
+    prompt = " ".join(SYSTEM_PROMPT.casefold().split())
+
+    assert "do not start every response with" in prompt
+    assert 'only say "नमस्ते"' in prompt
+    assert "user's current message says namaste" in prompt
+
+
+def test_namaste_message_gets_turn_specific_greeting_instruction() -> None:
+    directive = _namaste_instruction("Namaste, can you help me?")
+
+    assert "reply with नमस्ते" in directive
+
+
+def test_regular_message_forbids_repeated_namaste() -> None:
+    directive = _namaste_instruction("Can you help me find milk?")
+
+    assert "do not say नमस्ते" in directive.casefold()
+
+
 def test_system_prompt_requires_memory_consent_before_goodbye() -> None:
     prompt = " ".join(SYSTEM_PROMPT.casefold().split())
 
@@ -330,6 +352,22 @@ def test_system_prompt_requires_memory_consent_before_goodbye() -> None:
     assert "याद रखूँ" in SYSTEM_PROMPT
     assert "call save_caller_memory immediately" in prompt
     assert "before discussing anything else" in prompt
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["bye", "Goodbye!", "Okay, bye for now.", "Bye-bye"],
+)
+def test_detects_farewell_words(message: str) -> None:
+    assert _is_farewell(message) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Can I buy earrings?", "Good afternoon", "The buyer is waiting"],
+)
+def test_does_not_detect_farewell_inside_other_words(message: str) -> None:
+    assert _is_farewell(message) is False
 
 
 @pytest.mark.asyncio

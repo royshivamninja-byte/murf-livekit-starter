@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -23,6 +24,7 @@ from livekit.agents import (
 from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+from analytics import CallAnalyticsStore, CallTracker
 from catalogue import (
     Catalogue,
     CatalogueItem,
@@ -99,7 +101,9 @@ names, identifiers, and source titles may stay in English. Apply the same native
 rule to every other non-English language.
 Whenever you say Namaste in any response, always write the greeting as "नमस्ते" in
 Devanagari, even when the rest of the response is English. Never write "Namaste" in
-Latin letters.
+Latin letters. Do not start every response with "नमस्ते". Only say "नमस्ते" in the
+scripted first greeting, a returning-caller greeting, or when the user's current
+message says Namaste/नमस्ते. Otherwise, do not include it in the response.
 
 CALLER MEMORY
 At the beginning of a conversation, use lookup_caller to check whether this caller is
@@ -190,7 +194,8 @@ no markdown, bullets, brackets, emojis, or sentences longer than about 20 words.
 one question at a time. Let the user finish and handle pauses without rushing. If no
 meaningful speech is detected, say once: "I'm here. Take your time, or tell me how I
 can help with local products or orders." After a second failed attempt, say: "No
-problem. We can try again whenever you're ready. Goodbye."""
+problem. We can try again whenever you're ready. Goodbye." When you say "bye" or
+"goodbye", the call ends automatically after your farewell finishes."""
 
 FIRST_TURN_GREETING = (
     "नमस्ते! I'm Mitra, your local shopping assistant. I can help you find local "
@@ -257,6 +262,13 @@ ROMANIZED_HINDI_WORDS = {
     "rupaye",
 }
 
+FAREWELL_PATTERN = re.compile(r"\b(?:goodbye|bye)\b", re.IGNORECASE)
+
+
+def _is_farewell(message: str) -> bool:
+    """Return whether a spoken turn contains a standalone bye or goodbye."""
+    return FAREWELL_PATTERN.search(message) is not None
+
 
 def _response_language(message: str) -> str:
     """Classify the current utterance for strict English/Hindi response routing."""
@@ -266,6 +278,14 @@ def _response_language(message: str) -> str:
     if len(words & ROMANIZED_HINDI_WORDS) >= 2:
         return "Hindi"
     return "English"
+
+
+def _namaste_instruction(message: str) -> str:
+    """Allow Namaste only when the caller uses it in the current utterance."""
+    words = {word.strip(".,!?;:'\"()[]{}").casefold() for word in message.split()}
+    if words & {"namaste", "नमस्ते"}:
+        return "The user greeted you with Namaste; reply with नमस्ते once."
+    return "Do not say नमस्ते in this response because this is not a greeting turn."
 
 
 def _returning_caller_greeting(memory: CallerMemory) -> str:
@@ -352,6 +372,7 @@ class Assistant(Agent):
         catalogue_provider: Callable[[], Catalogue] | None = None,
         instructions: str = SYSTEM_PROMPT,
         outbound_context: dict | None = None,
+        call_tracker: CallTracker | None = None,
     ) -> None:
         super().__init__(instructions=instructions)
         self.caller_id = caller_id
@@ -365,6 +386,7 @@ class Assistant(Agent):
         self.knowledge_base = knowledge_base or KnowledgeBase()
         self.catalogue_provider = catalogue_provider
         self.outbound_context = outbound_context
+        self.call_tracker = call_tracker
         self.outbound_items_confirmed = False
         self.orders: list[dict[str, str | int]] = []
         self.credit_entries: list[dict[str, str | int]] = []
@@ -423,6 +445,8 @@ class Assistant(Agent):
                 "Apologize and do not claim the order is confirmed."
             )
         logger.info("Outbound order %s confirmed after both approvals", order_id)
+        if self.call_tracker:
+            self.call_tracker.mark_success("ORDER_COMPLETED")
         return (
             f"Order {order_id} is confirmed. Tell the customer it is confirmed, repeat "
             "the delivery window, thank them, and end politely."
@@ -448,7 +472,8 @@ class Assistant(Agent):
         if user_message is None:
             return super().llm_node(routed_ctx, tools, model_settings)
 
-        language = _response_language(user_message.text_content)
+        current_message = user_message.text_content
+        language = _response_language(current_message)
         if language == "Hindi":
             directive = (
                 "For this response, reply only in natural Hindi written in "
@@ -462,6 +487,9 @@ class Assistant(Agent):
                 "Namaste must always be written as नमस्ते."
             )
         user_message.content.append(f"[LANGUAGE INSTRUCTION: {directive}]")
+        user_message.content.append(
+            f"[GREETING INSTRUCTION: {_namaste_instruction(current_message)}]"
+        )
         normalized_message = user_message.text_content.casefold()
         if any(
             phrase in normalized_message
@@ -715,6 +743,8 @@ class Assistant(Agent):
             catalogue = await self._catalogue()
         except CatalogueUnavailableError as exc:
             logger.exception("Catalogue lookup failed")
+            if self.call_tracker:
+                self.call_tracker.mark_failure("TOOL_FAILURE")
             return str(exc)
         normalized_query = _normalize_catalogue_query(query)
         matches = search_products(
@@ -728,6 +758,9 @@ class Assistant(Agent):
                 "No matching products were found in the local catalogue. "
                 f"Catalogue last updated: {catalogue.updated_at}."
             )
+
+        if self.call_tracker:
+            self.call_tracker.mark_success("PRODUCT_ENQUIRY")
 
         results = "\n".join(
             f"{item.product_id}: {item.name} by {item.seller}; "
@@ -764,6 +797,8 @@ class Assistant(Agent):
             result = calculate_total(await self._catalogue(), product_ids, quantities)
         except CatalogueUnavailableError as exc:
             logger.exception("Order total catalogue lookup failed")
+            if self.call_tracker:
+                self.call_tracker.mark_failure("TOOL_FAILURE")
             return str(exc)
         except ValueError as exc:
             return f"The order total could not be calculated: {exc}"
@@ -775,6 +810,8 @@ class Assistant(Agent):
         ]
         line_results.append(f"Order total = INR {result.total_inr}")
         line_results.append(f"Catalogue last updated: {result.updated_at}")
+        if self.call_tracker:
+            self.call_tracker.mark_success("ORDER_REQUEST")
         return "\n".join(line_results)
 
     @staticmethod
@@ -805,6 +842,8 @@ class Assistant(Agent):
             catalogue = await self._catalogue()
         except CatalogueUnavailableError as exc:
             logger.exception("Order creation catalogue lookup failed")
+            if self.call_tracker:
+                self.call_tracker.mark_failure("TOOL_FAILURE")
             return str(exc)
         item = next(
             (
@@ -843,6 +882,8 @@ class Assistant(Agent):
             }
         )
         logger.info("Created local commerce order %s", order_id)
+        if self.call_tracker:
+            self.call_tracker.mark_success("ORDER_COMPLETED")
         return (
             f"Order {order_id} recorded for {quantity} x {item.name}. "
             f"Total INR {total}, {fulfilment}. Payment is not collected; "
@@ -914,10 +955,26 @@ async def my_agent(ctx: JobContext):
     else:
         outbound_instructions = SYSTEM_PROMPT
 
+    database_path = os.getenv("CALLER_MEMORY_DB")
+    analytics_store = (
+        CallAnalyticsStore(database_path) if database_path else CallAnalyticsStore()
+    )
+    channel = (
+        "SIP"
+        if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+        else "BROWSER"
+    )
+    call_tracker = CallTracker(
+        analytics_store,
+        call_id=f"{ctx.room.name}:{participant.identity}",
+        channel=channel,
+    )
+
     assistant = Assistant(
         caller_id=participant.identity,
         outbound_context=outbound_context,
         instructions=outbound_instructions,
+        call_tracker=call_tracker,
     )
     caller_memory = assistant.memory_store.lookup(participant.identity)
 
@@ -948,6 +1005,76 @@ async def my_agent(ctx: JobContext):
         # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
         preemptive_generation=True,
     )
+
+    farewell_state = {
+        "customer_hangup_started": False,
+        "agent_farewell_pending": False,
+    }
+    background_tasks: set[asyncio.Task[None]] = set()
+
+    async def say_goodbye_and_disconnect() -> None:
+        """Replace the normal response with a farewell, then end the live call."""
+        try:
+            session.interrupt()
+            speech = session.say("Goodbye.", allow_interruptions=False)
+            await speech.wait_for_playout()
+        except Exception:
+            logger.exception("Failed while playing the customer farewell")
+        finally:
+            ctx.shutdown("farewell completed")
+
+    @session.on("user_input_transcribed")
+    def on_user_input_transcribed(event) -> None:
+        if event.is_final:
+            call_tracker.record_user_turn(
+                language=event.language,
+                completed_at=event.created_at,
+            )
+            if (
+                _is_farewell(event.transcript)
+                and not farewell_state["customer_hangup_started"]
+            ):
+                farewell_state["customer_hangup_started"] = True
+                task = asyncio.create_task(say_goodbye_and_disconnect())
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
+
+    @session.on("conversation_item_added")
+    def on_conversation_item_added(event) -> None:
+        item = event.item
+        if (
+            getattr(item, "role", None) == "assistant"
+            and _is_farewell(getattr(item, "text_content", "") or "")
+            and not farewell_state["customer_hangup_started"]
+        ):
+            farewell_state["agent_farewell_pending"] = True
+
+    @session.on("agent_state_changed")
+    def on_agent_state_changed(event) -> None:
+        if event.new_state == "speaking":
+            call_tracker.record_agent_speaking(started_at=event.created_at)
+        elif (
+            event.new_state == "listening" and farewell_state["agent_farewell_pending"]
+        ):
+            farewell_state["agent_farewell_pending"] = False
+            ctx.shutdown("agent farewell completed")
+
+    @session.on("error")
+    def on_session_error(event) -> None:
+        del event
+        call_tracker.mark_error()
+
+    @session.on("close")
+    def on_session_close(event) -> None:
+        reason = getattr(event.reason, "value", str(event.reason))
+        failure_type = "USER_HANGUP" if reason == "participant_disconnected" else None
+        call_tracker.finish(failure_type=failure_type)
+
+    async def finish_analytics(reason: str) -> None:
+        failure_type = "USER_HANGUP" if "participant" in reason.casefold() else None
+        call_tracker.finish(failure_type=failure_type)
+
+    ctx.add_shutdown_callback(finish_analytics)
 
     # To use a realtime model instead of a voice pipeline, use the following session setup instead.
     # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))

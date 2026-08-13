@@ -9,6 +9,7 @@ import {
   ShoppingBagIcon,
   TruckIcon,
 } from 'lucide-react';
+import { AnalyticsDashboard } from '@/components/app/analytics-dashboard';
 import { CatalogueCards } from '@/components/app/catalogue-cards';
 import { EscalationDashboard } from '@/components/app/escalation-dashboard';
 import { OutboundCallCard } from '@/components/app/outbound-call-card';
@@ -133,6 +134,7 @@ export const WelcomeView = ({
       </section>
       <OutboundCallCard />
       <CatalogueCards />
+      <AnalyticsDashboard />
       <EscalationDashboard />
     </div>
   );
