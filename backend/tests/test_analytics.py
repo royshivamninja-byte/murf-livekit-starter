@@ -56,3 +56,29 @@ def test_filters_apply_to_all_analytics_queries(tmp_path) -> None:
     assert store.list_calls(filters)[0]["call_id"] == "hindi"
     assert store.failures(filters)["NO_RESPONSE"] == 1
     assert sum(point["total_calls"] for point in store.trends(filters)) == 1
+
+
+def test_handoff_metadata_is_stored_without_changing_success(tmp_path) -> None:
+    store = CallAnalyticsStore(tmp_path / "calls.sqlite3")
+    tracker = CallTracker(store, call_id="handoff", channel="BROWSER")
+    tracker.record_handoff("Returns & Refunds Specialist", success=True)
+    tracker.mark_success("PRODUCT_ENQUIRY")
+    tracker.finish()
+
+    record = store.list_calls(AnalyticsFilter())[0]
+    assert record["outcome"] == "SUCCESS"
+    assert record["specialist_used"] == 1
+    assert record["handoff_count"] == 1
+    assert record["handoff_success"] == 1
+    assert record["specialist_name"] == "Returns & Refunds Specialist"
+
+
+def test_failed_handoff_is_distinguishable(tmp_path) -> None:
+    store = CallAnalyticsStore(tmp_path / "calls.sqlite3")
+    tracker = CallTracker(store, call_id="failed-handoff", channel="SIP")
+    tracker.record_handoff("Returns & Refunds Specialist", success=False)
+    tracker.finish()
+
+    record = store.list_calls(AnalyticsFilter())[0]
+    assert record["failure_type"] == "HANDOFF_FAILURE"
+    assert record["handoff_success"] == 0

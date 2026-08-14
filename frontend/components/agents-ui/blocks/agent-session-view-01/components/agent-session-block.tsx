@@ -1,7 +1,9 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Track } from 'livekit-client';
+import { type RemoteParticipant, RoomEvent, Track } from 'livekit-client';
+import type { DataPacket_Kind } from '@livekit/protocol';
+import { CheckCircle2Icon } from 'lucide-react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
@@ -182,6 +184,7 @@ export function AgentSessionView_01({
   const session = useSessionContext();
   const { messages } = useSessionMessages(session);
   const [chatOpen, setChatOpen] = useState(false);
+  const [connectedSpecialist, setConnectedSpecialist] = useState<string | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
   const status =
@@ -208,6 +211,33 @@ export function AgentSessionView_01({
     }
   }, [messages]);
 
+  useEffect(() => {
+    const handleData = (
+      payload: Uint8Array,
+      _participant?: RemoteParticipant,
+      _kind?: DataPacket_Kind,
+      topic?: string
+    ) => {
+      if (topic !== 'agent.handoff') return;
+      try {
+        const event = JSON.parse(new TextDecoder().decode(payload)) as {
+          type?: string;
+          specialist_name?: string;
+        };
+        if (event.type === 'specialist_connected' && event.specialist_name) {
+          setConnectedSpecialist(event.specialist_name);
+        }
+      } catch {
+        // Ignore unrelated or malformed room data.
+      }
+    };
+
+    session.room.on(RoomEvent.DataReceived, handleData);
+    return () => {
+      session.room.off(RoomEvent.DataReceived, handleData);
+    };
+  }, [session.room]);
+
   return (
     <section
       ref={ref}
@@ -224,6 +254,21 @@ export function AgentSessionView_01({
           <span className="ml-2 text-xs text-stone-500 dark:text-stone-400">{status.hindi}</span>
         </div>
       </div>
+      <AnimatePresence>
+        {connectedSpecialist && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="absolute top-[76px] left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 shadow-sm dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+            role="status"
+            aria-live="polite"
+          >
+            <CheckCircle2Icon className="size-4" aria-hidden="true" />
+            {connectedSpecialist} connected
+          </motion.div>
+        )}
+      </AnimatePresence>
       <Fade top className="absolute inset-x-4 top-0 z-10 h-40" />
       {/* transcript */}
 
