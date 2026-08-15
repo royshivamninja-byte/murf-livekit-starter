@@ -3,7 +3,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { type RemoteParticipant, RoomEvent, Track } from 'livekit-client';
 import type { DataPacket_Kind } from '@livekit/protocol';
-import { CheckCircle2Icon } from 'lucide-react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
@@ -13,6 +12,7 @@ import {
 } from '@/components/agents-ui/agent-control-bar';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { cn } from '@/lib/shadcn/utils';
+import type { MitraVisualState } from '@/components/agents-ui/mitra-voice-core';
 import { TileLayout } from './tile-view';
 
 const MotionMessage = motion.create(Shimmer);
@@ -185,8 +185,18 @@ export function AgentSessionView_01({
   const { messages } = useSessionMessages(session);
   const [chatOpen, setChatOpen] = useState(false);
   const [connectedSpecialist, setConnectedSpecialist] = useState<string | null>(null);
+  const [handoffName, setHandoffName] = useState<string | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
+  const visualState: MitraVisualState = handoffName
+    ? 'handoff'
+    : agentState === 'speaking'
+      ? 'speaking'
+      : agentState === 'listening'
+        ? 'listening'
+        : agentState === 'thinking'
+          ? 'thinking'
+          : 'idle';
   const status =
     agentState === 'speaking'
       ? { label: 'Mitra is speaking', hindi: 'मित्र बोल रहा है', color: 'bg-orange-500' }
@@ -209,7 +219,18 @@ export function AgentSessionView_01({
     if (scrollAreaRef.current && lastMessageIsLocal) {
       scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight;
     }
-  }, [messages]);
+
+    if (connectedSpecialist && lastMessage && !lastMessageIsLocal) {
+      const transcript = lastMessage.message.toLowerCase();
+      if (
+        transcript.includes('return you to the main') ||
+        transcript.includes('returning you to the main') ||
+        transcript.includes('back to the main assistant')
+      ) {
+        setConnectedSpecialist(null);
+      }
+    }
+  }, [connectedSpecialist, messages]);
 
   useEffect(() => {
     const handleData = (
@@ -225,7 +246,9 @@ export function AgentSessionView_01({
           specialist_name?: string;
         };
         if (event.type === 'specialist_connected' && event.specialist_name) {
+          setHandoffName(event.specialist_name);
           setConnectedSpecialist(event.specialist_name);
+          window.setTimeout(() => setHandoffName(null), 1600);
         }
       } catch {
         // Ignore unrelated or malformed room data.
@@ -254,21 +277,6 @@ export function AgentSessionView_01({
           <span className="ml-2 text-xs text-stone-500 dark:text-stone-400">{status.hindi}</span>
         </div>
       </div>
-      <AnimatePresence>
-        {connectedSpecialist && (
-          <motion.div
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="absolute top-[76px] left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 shadow-sm dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
-            role="status"
-            aria-live="polite"
-          >
-            <CheckCircle2Icon className="size-4" aria-hidden="true" />
-            {connectedSpecialist} connected
-          </motion.div>
-        )}
-      </AnimatePresence>
       <Fade top className="absolute inset-x-4 top-0 z-10 h-40" />
       {/* transcript */}
 
@@ -291,6 +299,9 @@ export function AgentSessionView_01({
       {/* Tile layout */}
       <TileLayout
         chatOpen={chatOpen}
+        visualState={visualState}
+        specialistName={connectedSpecialist}
+        handoffName={handoffName}
         audioVisualizerType={audioVisualizerType}
         audioVisualizerColor={audioVisualizerColor}
         audioVisualizerColorShift={audioVisualizerColorShift}
