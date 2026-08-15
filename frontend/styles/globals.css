@@ -136,3 +136,81 @@
     radial-gradient(circle at 90% 80%, color-mix(in srgb, #047857 16%, transparent), transparent 30%),
     #17130f;
 }
+
+.mitra-shell button {
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    background-color 160ms ease;
+}
+
+.mitra-shell button:not(:disabled):hover { transform: translateY(-1px); }
+.mitra-shell button:not(:disabled):active { transform: translateY(0) scale(0.97); }
+
+.mitra-core-stage {
+  isolation: isolate;
+  filter: drop-shadow(0 20px 28px rgb(194 65 12 / 0.12));
+}
+
+.mitra-core-orb {
+  background:
+    radial-gradient(circle at 34% 28%, rgb(255 255 255 / 0.72), transparent 15%),
+    radial-gradient(circle at 42% 35%, #fb923c, #c2410c 58%, #7c2d12 100%);
+  box-shadow:
+    inset 0 0 22px rgb(255 255 255 / 0.24),
+    0 0 28px rgb(249 115 22 / 0.38),
+    0 0 72px rgb(234 88 12 / 0.18);
+}
+
+[data-voice-state='listening'] .mitra-core-orb {
+  background: radial-gradient(circle at 34% 28%, #a7f3d0, #059669 58%, #064e3b 100%);
+  box-shadow: 0 0 34px rgb(5 150 105 / 0.42), 0 0 78px rgb(5 150 105 / 0.18);
+}
+
+.mitra-core-ring {
+  border: 1px solid rgb(249 115 22 / 0.25);
+  box-shadow: inset 0 0 22px rgb(249 115 22 / 0.05);
+}
+
+.mitra-core-ring-outer { animation: mitra-core-breathe 3.8s ease-in-out infinite; }
+.mitra-core-ring-inner { animation: mitra-core-breathe 3.8s 0.6s ease-in-out infinite reverse; }
+
+[data-voice-state='listening'] .mitra-core-ring {
+  border-color: rgb(5 150 105 / 0.36);
+  animation-duration: 1.35s;
+}
+
+[data-voice-state='thinking'] .mitra-core-ring-outer {
+  border-top-color: #f97316;
+  animation: mitra-core-spin 2.2s linear infinite;
+}
+
+.mitra-core-orbit { animation: mitra-core-spin 3.4s linear infinite; }
+.mitra-core-orbit span {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #f97316;
+  box-shadow: 0 0 12px #f97316;
+}
+.mitra-core-orbit span:nth-child(1) { left: 14%; top: 18%; }
+.mitra-core-orbit span:nth-child(2) { right: 2%; top: 47%; }
+.mitra-core-orbit span:nth-child(3) { bottom: 4%; left: 42%; }
+
+@keyframes mitra-core-breathe {
+  0%, 100% { transform: scale(0.96); opacity: 0.42; }
+  50% { transform: scale(1.06); opacity: 0.9; }
+}
+
+@keyframes mitra-core-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .mitra-shell button { transition: none; }
+  .mitra-shell button:not(:disabled):hover,
+  .mitra-shell button:not(:disabled):active { transform: none; }
+  .mitra-core-ring,
+  .mitra-core-orbit {
+    animation: none !important;
+  }
+}
